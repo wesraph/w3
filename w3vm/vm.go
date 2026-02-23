@@ -42,6 +42,8 @@ type VM struct {
 
 	txIndex uint64
 	db      *state.StateDB
+
+	evm EVM // custom EVM backend (nil = use geth)
 }
 
 // New creates a new VM, that is configured with the given options.
@@ -56,6 +58,28 @@ func New(opts ...Option) (*VM, error) {
 
 	if err := vm.opts.Init(); err != nil {
 		return nil, err
+	}
+
+	if vm.evm != nil {
+		// Custom EVM backend: pass fetcher if supported, apply preState via Set methods.
+		if setter, ok := vm.evm.(EVMFetcherSetter); ok && vm.opts.fetcher != nil {
+			setter.SetFetcher(vm.opts.fetcher)
+		}
+		for addr, acc := range vm.opts.preState {
+			if acc.Nonce > 0 {
+				vm.evm.SetNonce(addr, acc.Nonce)
+			}
+			if acc.Balance != nil {
+				vm.evm.SetBalance(addr, acc.Balance)
+			}
+			if acc.Code != nil {
+				vm.evm.SetCode(addr, acc.Code)
+			}
+			for slot, val := range acc.Storage {
+				vm.evm.SetStorageAt(addr, slot, val)
+			}
+		}
+		return vm, nil
 	}
 
 	// set DB
@@ -94,6 +118,10 @@ func (vm *VM) ApplyTx(tx *types.Transaction, hooks ...*tracing.Hooks) (*Receipt,
 }
 
 func (v *VM) apply(msg *w3types.Message, isCall bool, hooks *tracing.Hooks) (*Receipt, error) {
+	if v.evm != nil {
+		return v.applyCustom(msg, isCall)
+	}
+
 	if v.db.Error() != nil {
 		return nil, ErrFetch
 	}
@@ -173,6 +201,124 @@ func (v *VM) apply(msg *w3types.Message, isCall bool, hooks *tracing.Hooks) (*Re
 	return receipt, receipt.Err
 }
 
+func (v *VM) applyCustom(msg *w3types.Message, isCall bool) (*Receipt, error) {
+	evmMsg, err := v.buildEVMMessage(msg, isCall)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := v.evm.Execute(evmMsg, isCall)
+	if err != nil {
+		return nil, err
+	}
+
+	receipt := &Receipt{
+		f:       msg.Func,
+		GasUsed: result.UsedGas,
+		Output:  result.ReturnData,
+		Logs:    result.Logs,
+	}
+
+	// normalize log indices
+	for i, log := range receipt.Logs {
+		log.Index = uint(i)
+		log.TxHash = w3.Hash0
+		log.TxIndex = 0
+	}
+
+	if result.Err != nil {
+		if reason, unpackErr := abi.UnpackRevert(result.ReturnData); unpackErr != nil {
+			receipt.Err = ErrRevert
+		} else {
+			receipt.Err = fmt.Errorf("%w: %s", ErrRevert, reason)
+		}
+	}
+	if result.ContractAddress != nil {
+		receipt.ContractAddress = result.ContractAddress
+	} else if msg.To == nil {
+		contractAddr := crypto.CreateAddress(msg.From, evmMsg.Nonce)
+		receipt.ContractAddress = &contractAddr
+	}
+
+	v.txIndex++
+	return receipt, receipt.Err
+}
+
+func (v *VM) buildEVMMessage(msg *w3types.Message, skipAccChecks bool) (*EVMMessage, error) {
+	nonce := msg.Nonce
+	if !skipAccChecks && nonce == 0 {
+		var err error
+		nonce, err = v.Nonce(msg.From)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	gasLimit := msg.Gas
+	if maxGasLimit := v.opts.blockCtx.GasLimit; gasLimit == 0 {
+		gasLimit = maxGasLimit
+	} else if gasLimit > maxGasLimit {
+		gasLimit = maxGasLimit
+	}
+	if gasLimit == 0 {
+		gasLimit = 15_000_000
+	}
+
+	var input []byte
+	if msg.Input == nil && msg.Func != nil {
+		var err error
+		input, err = msg.Func.EncodeArgs(msg.Args...)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		input = msg.Input
+	}
+
+	var gasPrice, gasFeeCap, gasTipCap *big.Int
+	if baseFee := v.opts.blockCtx.BaseFee; baseFee == nil {
+		gasPrice = new(big.Int).Set(cmp.Or(msg.GasPrice, w3.Big0))
+		gasFeeCap, gasTipCap = gasPrice, gasPrice
+	} else {
+		if msg.GasPrice != nil && msg.GasFeeCap == nil && msg.GasTipCap == nil {
+			gasPrice = msg.GasPrice
+			gasFeeCap, gasTipCap = gasPrice, gasPrice
+		} else {
+			gasFeeCap = new(big.Int).Set(cmp.Or(msg.GasFeeCap, w3.Big0))
+			gasTipCap = new(big.Int).Set(cmp.Or(msg.GasTipCap, w3.Big0))
+			gasPrice = new(big.Int).Add(baseFee, gasTipCap)
+			if gasPrice.Cmp(gasFeeCap) > 0 {
+				gasPrice = gasFeeCap
+			}
+		}
+	}
+
+	if v.opts.noBaseFee {
+		gasFeeCap.SetInt64(0)
+		gasTipCap.SetInt64(0)
+	}
+
+	value := new(big.Int).Set(cmp.Or(msg.Value, w3.Big0))
+
+	return &EVMMessage{
+		From:                  msg.From,
+		To:                    msg.To,
+		Nonce:                 nonce,
+		Value:                 value,
+		GasLimit:              gasLimit,
+		GasPrice:              gasPrice,
+		GasFeeCap:             gasFeeCap,
+		GasTipCap:             gasTipCap,
+		Input:                 input,
+		AccessList:            msg.AccessList,
+		BlobGasFeeCap:         msg.BlobGasFeeCap,
+		BlobHashes:            msg.BlobHashes,
+		SetCodeAuthorizations: msg.SetCodeAuthorizations,
+		SkipNonceChecks:       skipAccChecks,
+		SkipTransactionChecks: skipAccChecks,
+	}, nil
+}
+
 // Call the given message on the VM, and returns its receipt. Any state changes
 // of a call are reverted. Multiple tracing hooks may be given to trace the execution
 // of the message.
@@ -216,6 +362,9 @@ func (cff *CallFuncFactory) Returns(returns ...any) error {
 
 // Nonce returns the nonce of the given address.
 func (vm *VM) Nonce(addr common.Address) (uint64, error) {
+	if vm.evm != nil {
+		return vm.evm.Nonce(addr)
+	}
 	nonce := vm.db.GetNonce(addr)
 	if vm.db.Error() != nil {
 		return 0, fmt.Errorf("%w: failed to fetch nonce of %s", ErrFetch, addr)
@@ -225,11 +374,18 @@ func (vm *VM) Nonce(addr common.Address) (uint64, error) {
 
 // SetNonce sets the nonce of the given address.
 func (vm *VM) SetNonce(addr common.Address, nonce uint64) {
+	if vm.evm != nil {
+		vm.evm.SetNonce(addr, nonce)
+		return
+	}
 	vm.db.SetNonce(addr, nonce, tracing.NonceChangeUnspecified)
 }
 
 // Balance returns the balance of the given address.
 func (vm *VM) Balance(addr common.Address) (*big.Int, error) {
+	if vm.evm != nil {
+		return vm.evm.Balance(addr)
+	}
 	balance := vm.db.GetBalance(addr)
 	if vm.db.Error() != nil {
 		return nil, fmt.Errorf("%w: failed to fetch balance of %s", ErrFetch, addr)
@@ -239,11 +395,18 @@ func (vm *VM) Balance(addr common.Address) (*big.Int, error) {
 
 // SetBalance sets the balance of the given address.
 func (vm *VM) SetBalance(addr common.Address, balance *big.Int) {
+	if vm.evm != nil {
+		vm.evm.SetBalance(addr, balance)
+		return
+	}
 	vm.db.SetBalance(addr, uint256.MustFromBig(balance), tracing.BalanceChangeUnspecified)
 }
 
 // Code returns the code of the given address.
 func (vm *VM) Code(addr common.Address) ([]byte, error) {
+	if vm.evm != nil {
+		return vm.evm.Code(addr)
+	}
 	code := vm.db.GetCode(addr)
 	if vm.db.Error() != nil {
 		return nil, fmt.Errorf("%w: failed to fetch code of %s", ErrFetch, addr)
@@ -253,11 +416,18 @@ func (vm *VM) Code(addr common.Address) ([]byte, error) {
 
 // SetCode sets the code of the given address.
 func (vm *VM) SetCode(addr common.Address, code []byte) {
+	if vm.evm != nil {
+		vm.evm.SetCode(addr, code)
+		return
+	}
 	vm.db.SetCode(addr, code, tracing.CodeChangeUnspecified)
 }
 
 // StorageAt returns the state of the given address at the give storage slot.
 func (vm *VM) StorageAt(addr common.Address, slot common.Hash) (common.Hash, error) {
+	if vm.evm != nil {
+		return vm.evm.StorageAt(addr, slot)
+	}
 	val := vm.db.GetState(addr, slot)
 	if vm.db.Error() != nil {
 		return w3.Hash0, fmt.Errorf("%w: failed to fetch storage of %s at %s", ErrFetch, addr, slot)
@@ -267,15 +437,27 @@ func (vm *VM) StorageAt(addr common.Address, slot common.Hash) (common.Hash, err
 
 // SetStorageAt sets the state of the given address at the given storage slot.
 func (vm *VM) SetStorageAt(addr common.Address, slot, val common.Hash) {
+	if vm.evm != nil {
+		vm.evm.SetStorageAt(addr, slot, val)
+		return
+	}
 	vm.db.SetState(addr, slot, val)
 }
 
 // Snapshot the current state of the VM. The returned state can only be rolled
 // back to once. Use [state.StateDB.Copy] if you need to rollback multiple times.
-func (vm *VM) Snapshot() *state.StateDB { return vm.db.Copy() }
+func (vm *VM) Snapshot() *state.StateDB {
+	if vm.evm != nil {
+		panic("w3vm: Snapshot is not supported with a custom EVM backend")
+	}
+	return vm.db.Copy()
+}
 
 // Rollback the state of the VM to the given snapshot.
 func (vm *VM) Rollback(snapshot *state.StateDB) {
+	if vm.evm != nil {
+		panic("w3vm: Rollback is not supported with a custom EVM backend")
+	}
 	vm.db = snapshot
 	vm.txIndex = uint64(snapshot.TxIndex()) + 1
 }
@@ -417,6 +599,13 @@ func defaultBlockContext() *vm.BlockContext {
 // Clone returns a copy of the VM and its state. The cloned VM is independent of
 // the original VM, and state changes do not affect the original VM.
 func (vm *VM) Clone() *VM {
+	if vm.evm != nil {
+		return &VM{
+			opts:    vm.opts,
+			txIndex: vm.txIndex,
+			evm:     vm.evm.Clone(),
+		}
+	}
 	return &VM{
 		opts:    vm.opts,
 		txIndex: vm.txIndex,
@@ -601,4 +790,11 @@ func WithTB(tb testing.TB) Option {
 // WithJumpDestCache sets the jump destination analysis cache for the VM.
 func WithJumpDestCache(cache vm.JumpDestCache) Option {
 	return func(vm *VM) { vm.opts.jumpDestCache = cache }
+}
+
+// WithEVM sets a custom [EVM] execution backend for the VM. When set, the VM
+// delegates all execution and state access to the custom backend instead of
+// using the built-in geth EVM.
+func WithEVM(evm EVM) Option {
+	return func(vm *VM) { vm.evm = evm }
 }
