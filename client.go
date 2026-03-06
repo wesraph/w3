@@ -1,6 +1,9 @@
 /*
-Package w3 implements a blazing fast and modular Ethereum JSON RPC client with
-first-class ABI support.
+Package w3 is your toolbelt for integrating with Ethereum in Go. Closely linked
+to [go-ethereum], it provides an ergonomic wrapper for working with RPC, ABI's,
+and the EVM.
+
+[go-ethereum]: https://github.com/ethereum/go-ethereum
 */
 package w3
 
@@ -26,9 +29,10 @@ type Client struct {
 
 // NewClient returns a new Client given an rpc.Client client.
 func NewClient(client *rpc.Client, opts ...Option) *Client {
-	c := &Client{
-		client: client,
+	if client == nil {
+		panic("w3: client is nil")
 	}
+	c := &Client{client: client}
 	for _, opt := range opts {
 		if opt == nil {
 			continue
@@ -60,7 +64,7 @@ func MustDial(rawurl string, opts ...Option) *Client {
 	return client
 }
 
-// Close closes the RPC connection and cancels any in-flight requests.
+// Close the RPC connection and cancel all in-flight requests.
 //
 // Close implements the [io.Closer] interface.
 func (c *Client) Close() error {
@@ -206,7 +210,7 @@ type Option func(*Client)
 
 // WithRateLimiter sets the rate limiter for the client. Set the optional argument
 // costFunc to nil to limit the number of requests. Supply a costFunc to limit
-// the the number of requests based on individual RPC calls for advanced rate
+// the number of requests based on individual RPC calls for advanced rate
 // limiting by e.g. Compute Units (CUs). Note that only if len(methods) > 1, the
 // calls are sent in a batch request.
 func WithRateLimiter(rl *rate.Limiter, costFunc func(methods []string) (cost int)) Option {

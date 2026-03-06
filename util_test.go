@@ -255,6 +255,7 @@ func TestFromWei(t *testing.T) {
 		Want     string
 	}{
 		{nil, 0, "<nil>"},
+		{nil, 0, fmt.Sprint(nil)},
 		{big.NewInt(0), 0, "0"},
 		{big.NewInt(1), 0, "1"},
 		{big.NewInt(0), 18, "0"},
@@ -285,6 +286,44 @@ func TestFromWei(t *testing.T) {
 			got := w3.FromWei(test.Wei, test.Decimals)
 			if got != test.Want {
 				t.Fatalf("%q != %q", got, test.Want)
+			}
+		})
+	}
+}
+
+func TestBigMin(t *testing.T) {
+	tests := []struct {
+		A, B, Want *big.Int
+	}{
+		{big.NewInt(0), big.NewInt(0), big.NewInt(0)},
+		{big.NewInt(0), big.NewInt(1), big.NewInt(0)},
+		{big.NewInt(1), big.NewInt(0), big.NewInt(0)},
+	}
+
+	for i, test := range tests {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			got := w3.BigMin(test.A, test.B)
+			if test.Want.Cmp(got) != 0 {
+				t.Fatalf("want: %v, got: %v", test.Want, got)
+			}
+		})
+	}
+}
+
+func TestBigMax(t *testing.T) {
+	tests := []struct {
+		A, B, Want *big.Int
+	}{
+		{big.NewInt(0), big.NewInt(0), big.NewInt(0)},
+		{big.NewInt(0), big.NewInt(1), big.NewInt(1)},
+		{big.NewInt(1), big.NewInt(0), big.NewInt(1)},
+	}
+
+	for i, test := range tests {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			got := w3.BigMax(test.A, test.B)
+			if test.Want.Cmp(got) != 0 {
+				t.Fatalf("want: %v, got: %v", test.Want, got)
 			}
 		})
 	}

@@ -9,54 +9,58 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/holiman/uint256"
+	"github.com/lmittmann/w3/internal/hexutil"
 	"github.com/lmittmann/w3/internal/module"
 	"github.com/lmittmann/w3/w3types"
 )
 
 // TraceCall requests the trace of the given message.
-func TraceCall(msg *w3types.Message, blockNumber *big.Int, config *TraceConfig) w3types.RPCCallerFactory[Trace] {
+func TraceCall(msg *w3types.Message, blockNumber *big.Int, config *TraceConfig) w3types.RPCCallerFactory[*Trace] {
 	if config == nil {
 		config = &TraceConfig{}
 	}
 	return module.NewFactory(
 		"debug_traceCall",
 		[]any{msg, module.BlockNumberArg(blockNumber), config},
-		module.WithArgsWrapper[Trace](msgArgsWrapper),
+		module.WithArgsWrapper[*Trace](msgArgsWrapper),
 	)
 }
 
 // TraceTx requests the trace of the transaction with the given hash.
-func TraceTx(txHash common.Hash, config *TraceConfig) w3types.RPCCallerFactory[Trace] {
+func TraceTx(txHash common.Hash, config *TraceConfig) w3types.RPCCallerFactory[*Trace] {
 	if config == nil {
 		config = &TraceConfig{}
 	}
-	return module.NewFactory[Trace](
+	return module.NewFactory[*Trace](
 		"debug_traceTransaction",
 		[]any{txHash, config},
 	)
 }
 
 type TraceConfig struct {
-	Overrides     w3types.State // Override account state
-	EnableStack   bool          // Enable stack capture
-	EnableMemory  bool          // Enable memory capture
-	EnableStorage bool          // Enable storage capture
-	Limit         uint64        // Maximum number of StructLog's to capture (all if zero)
+	Overrides      w3types.State           // Override account state
+	BlockOverrides *w3types.BlockOverrides // Override block state
+	EnableStack    bool                    // Enable stack capture
+	EnableMemory   bool                    // Enable memory capture
+	EnableStorage  bool                    // Enable storage capture
+	Limit          uint64                  // Maximum number of StructLog's to capture (all if zero)
 }
 
 // MarshalJSON implements the [json.Marshaler].
 func (c *TraceConfig) MarshalJSON() ([]byte, error) {
 	type config struct {
-		Overrides        w3types.State `json:"stateOverrides,omitempty"`
-		DisableStorage   bool          `json:"disableStorage,omitempty"`
-		DisableStack     bool          `json:"disableStack,omitempty"`
-		EnableMemory     bool          `json:"enableMemory,omitempty"`
-		EnableReturnData bool          `json:"enableReturnData,omitempty"`
-		Limit            uint64        `json:"limit,omitempty"`
+		Overrides        w3types.State           `json:"stateOverrides,omitempty"`
+		BlockOverrides   *w3types.BlockOverrides `json:"blockOverrides,omitempty"`
+		DisableStorage   bool                    `json:"disableStorage,omitempty"`
+		DisableStack     bool                    `json:"disableStack,omitempty"`
+		EnableMemory     bool                    `json:"enableMemory,omitempty"`
+		EnableReturnData bool                    `json:"enableReturnData,omitempty"`
+		Limit            uint64                  `json:"limit,omitempty"`
 	}
 
 	return json.Marshal(config{
 		Overrides:        c.Overrides,
+		BlockOverrides:   c.BlockOverrides,
 		DisableStorage:   !c.EnableStorage,
 		DisableStack:     !c.EnableStack,
 		EnableMemory:     c.EnableMemory,
@@ -72,6 +76,26 @@ type Trace struct {
 	StructLogs []*StructLog `json:"structLogs"`
 }
 
+func (t *Trace) UnmarshalJSON(data []byte) error {
+	type trace struct {
+		Gas        uint64        `json:"gas"`
+		Failed     bool          `json:"failed"`
+		Output     hexutil.Bytes `json:"returnValue"`
+		StructLogs []*StructLog  `json:"structLogs"`
+	}
+
+	var dec trace
+	if err := json.Unmarshal(data, &dec); err != nil {
+		return err
+	}
+
+	t.Gas = dec.Gas
+	t.Failed = dec.Failed
+	t.Output = dec.Output
+	t.StructLogs = dec.StructLogs
+	return nil
+}
+
 type StructLog struct {
 	Pc      uint64
 	Depth   uint
@@ -80,7 +104,7 @@ type StructLog struct {
 	Op      vm.OpCode
 	Stack   []uint256.Int
 	Memory  []byte
-	Storage map[common.Hash]common.Hash
+	Storage w3types.Storage
 }
 
 func (l *StructLog) UnmarshalJSON(data []byte) error {
@@ -109,7 +133,7 @@ func (l *StructLog) UnmarshalJSON(data []byte) error {
 	l.Memory = dec.Memory
 
 	if len(dec.Storage) > 0 {
-		l.Storage = make(map[common.Hash]common.Hash, len(dec.Storage))
+		l.Storage = make(w3types.Storage, len(dec.Storage))
 		for k, v := range dec.Storage {
 			l.Storage[(common.Hash)(k)] = (common.Hash)(v)
 		}

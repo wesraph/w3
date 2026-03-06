@@ -11,12 +11,46 @@ import (
 
 // Common [big.Int]'s.
 var (
-	Big0          = new(big.Int)
-	Big1          = big.NewInt(1)
-	Big2          = big.NewInt(2)
-	BigGwei       = big.NewInt(1_000000000)
-	BigEther      = big.NewInt(1_000000000_000000000)
+	Big0     = new(big.Int)
+	Big1     = big.NewInt(1)
+	Big2     = big.NewInt(2)
+	Big10    = big.NewInt(10)
+	BigGwei  = big.NewInt(1_000000000)
+	BigEther = big.NewInt(1_000000000_000000000)
+
+	// Max Uint Values.
 	BigMaxUint256 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 256), Big1)
+	BigMaxUint248 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 248), Big1)
+	BigMaxUint240 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 240), Big1)
+	BigMaxUint232 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 232), Big1)
+	BigMaxUint224 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 224), Big1)
+	BigMaxUint216 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 216), Big1)
+	BigMaxUint208 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 208), Big1)
+	BigMaxUint200 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 200), Big1)
+	BigMaxUint192 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 192), Big1)
+	BigMaxUint184 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 184), Big1)
+	BigMaxUint176 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 176), Big1)
+	BigMaxUint168 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 168), Big1)
+	BigMaxUint160 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 160), Big1)
+	BigMaxUint152 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 152), Big1)
+	BigMaxUint144 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 144), Big1)
+	BigMaxUint136 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 136), Big1)
+	BigMaxUint128 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 128), Big1)
+	BigMaxUint120 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 120), Big1)
+	BigMaxUint112 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 112), Big1)
+	BigMaxUint104 = new(big.Int).Sub(new(big.Int).Lsh(Big1, 104), Big1)
+	BigMaxUint96  = new(big.Int).Sub(new(big.Int).Lsh(Big1, 96), Big1)
+	BigMaxUint88  = new(big.Int).Sub(new(big.Int).Lsh(Big1, 88), Big1)
+	BigMaxUint80  = new(big.Int).Sub(new(big.Int).Lsh(Big1, 80), Big1)
+	BigMaxUint72  = new(big.Int).Sub(new(big.Int).Lsh(Big1, 72), Big1)
+	BigMaxUint64  = new(big.Int).Sub(new(big.Int).Lsh(Big1, 64), Big1)
+	BigMaxUint56  = new(big.Int).Sub(new(big.Int).Lsh(Big1, 56), Big1)
+	BigMaxUint48  = new(big.Int).Sub(new(big.Int).Lsh(Big1, 48), Big1)
+	BigMaxUint40  = new(big.Int).Sub(new(big.Int).Lsh(Big1, 40), Big1)
+	BigMaxUint32  = new(big.Int).Sub(new(big.Int).Lsh(Big1, 32), Big1)
+	BigMaxUint24  = new(big.Int).Sub(new(big.Int).Lsh(Big1, 24), Big1)
+	BigMaxUint16  = new(big.Int).Sub(new(big.Int).Lsh(Big1, 16), Big1)
+	BigMaxUint8   = new(big.Int).Sub(new(big.Int).Lsh(Big1, 8), Big1)
 )
 
 // Zero Values.
@@ -30,16 +64,16 @@ var (
 //
 // Use [common.HexToAddress] to get the address from a hexstring without
 // panicking.
-func A(hexAddress string) (addr common.Address) {
-	if has0xPrefix(hexAddress) {
-		hexAddress = hexAddress[2:]
+func A(hexAddr string) (addr common.Address) {
+	if has0xPrefix(hexAddr) {
+		hexAddr = hexAddr[2:]
 	}
 
-	n, err := hex.Decode(addr[:], []byte(hexAddress))
+	n, err := hex.Decode(addr[:], []byte(hexAddr))
 	if err != nil {
-		panic(fmt.Sprintf("invalid address %q: %v", hexAddress, err))
+		panic(fmt.Sprintf("invalid address %q: %v", hexAddr, err))
 	} else if n != 20 {
-		panic(fmt.Sprintf("invalid address %q: must have 20 bytes", hexAddress))
+		panic(fmt.Sprintf("invalid address %q: must have 20 bytes", hexAddr))
 	}
 	return addr
 }
@@ -178,7 +212,7 @@ func FromWei(wei *big.Int, decimals uint8) string {
 		return fmt.Sprint(nil)
 	}
 
-	d := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
+	d := new(big.Int).Exp(Big10, big.NewInt(int64(decimals)), nil)
 
 	sign := ""
 	if wei.Sign() < 0 {
@@ -197,4 +231,20 @@ func FromWei(wei *big.Int, decimals uint8) string {
 // has0xPrefix validates hexStr begins with '0x' or '0X'.
 func has0xPrefix(hexStr string) bool {
 	return len(hexStr) >= 2 && hexStr[0] == '0' && (hexStr[1] == 'x' || hexStr[1] == 'X')
+}
+
+// BigMin returns the smaller of the two big integers.
+func BigMin(a, b *big.Int) *big.Int {
+	if a.Cmp(b) < 0 {
+		return a
+	}
+	return b
+}
+
+// BigMax returns the larger of the two big integers.
+func BigMax(a, b *big.Int) *big.Int {
+	if a.Cmp(b) > 0 {
+		return a
+	}
+	return b
 }

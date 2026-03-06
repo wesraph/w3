@@ -3,10 +3,6 @@ package w3vm
 import (
 	"crypto/rand"
 	"math/big"
-	"path/filepath"
-	"runtime"
-	"strings"
-	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -15,8 +11,6 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/lmittmann/w3"
 	"github.com/lmittmann/w3/internal/crypto"
-	w3hexutil "github.com/lmittmann/w3/internal/hexutil"
-	"github.com/lmittmann/w3/internal/mod"
 	"github.com/lmittmann/w3/internal/module"
 	"github.com/lmittmann/w3/w3types"
 )
@@ -28,42 +22,119 @@ func RandA() (addr common.Address) {
 }
 
 var (
-	weth9BalancePos   = common.BigToHash(big.NewInt(3))
-	weth9AllowancePos = common.BigToHash(big.NewInt(4))
+	weth9BalancePos   = common.BytesToHash([]byte{3})
+	weth9AllowancePos = common.BytesToHash([]byte{4})
 )
 
 // WETHBalanceSlot returns the storage slot that stores the WETH balance of
 // the given addr.
 func WETHBalanceSlot(addr common.Address) common.Hash {
-	return Slot(weth9BalancePos, common.BytesToHash(addr[:]))
+	return SoliditySlot(weth9BalancePos, common.BytesToHash(addr[:]))
 }
 
 // WETHAllowanceSlot returns the storage slot that stores the WETH allowance
-// of the given owner and spender.
+// of the given owner to the spender.
 func WETHAllowanceSlot(owner, spender common.Address) common.Hash {
-	return Slot2(weth9AllowancePos, common.BytesToHash(owner[:]), common.BytesToHash(spender[:]))
+	return SoliditySlot2(weth9AllowancePos, common.BytesToHash(owner[:]), common.BytesToHash(spender[:]))
+}
+
+// SoliditySlot returns the storage slot of a mapping with the given position and key.
+//
+//	mapping(bytes32 => bytes32)
+func SoliditySlot(pos, key common.Hash) common.Hash {
+	return crypto.Keccak256Hash(key[:], pos[:])
+}
+
+// SoliditySlot2 returns the storage slot of a double mapping with the given position
+// and keys.
+//
+//	mapping(bytes32 => mapping(bytes32 => bytes32))
+func SoliditySlot2(pos, key0, key1 common.Hash) common.Hash {
+	return crypto.Keccak256Hash(
+		key1[:],
+		crypto.Keccak256(key0[:], pos[:]),
+	)
+}
+
+// SoliditySlot3 returns the storage slot of a triple mapping with the given position
+// and keys.
+//
+//	mapping(bytes32 => mapping(bytes32 => mapping(bytes32 => bytes32)))
+func SoliditySlot3(pos, key0, key1, key2 common.Hash) common.Hash {
+	return crypto.Keccak256Hash(
+		key2[:],
+		crypto.Keccak256(
+			key1[:],
+			crypto.Keccak256(key0[:], pos[:]),
+		),
+	)
+}
+
+// VyperSlot returns the storage slot of a mapping with the given position and key.
+//
+//	HashMap[bytes32, bytes32]
+func VyperSlot(pos, key common.Hash) common.Hash {
+	return crypto.Keccak256Hash(pos[:], key[:])
+}
+
+// VyperSlot2 returns the storage slot of a double mapping with the given position
+// and keys.
+//
+//	HashMap[bytes32, HashMap[bytes32, bytes32]]
+func VyperSlot2(pos, key0, key1 common.Hash) common.Hash {
+	return crypto.Keccak256Hash(
+		crypto.Keccak256(pos[:], key0[:]),
+		key1[:],
+	)
+}
+
+// VyperSlot3 returns the storage slot of a triple mapping with the given position
+// and keys.
+//
+//	HashMap[bytes32, HashMap[bytes32, HashMap[bytes32, bytes32]]]
+func VyperSlot3(pos, key0, key1, key2 common.Hash) common.Hash {
+	return crypto.Keccak256Hash(
+		crypto.Keccak256(
+			crypto.Keccak256(pos[:], key0[:]),
+			key1[:],
+		),
+		key2[:],
+	)
 }
 
 // Slot returns the storage slot of a mapping with the given position and key.
+//
+// Slot follows the Solidity storage layout for:
+//
+//	mapping(bytes32 => bytes32)
+//
+// Deprecated: Use SoliditySlot instead.
 func Slot(pos, key common.Hash) common.Hash {
-	return crypto.Keccak256Hash(key[:], pos[:])
+	return SoliditySlot(pos, key)
 }
 
 // Slot2 returns the storage slot of a double mapping with the given position
 // and keys.
-func Slot2(pos, key, key2 common.Hash) common.Hash {
-	return crypto.Keccak256Hash(
-		key2[:],
-		crypto.Keccak256(key[:], pos[:]),
-	)
+//
+// Slot2 follows the Solidity storage layout for:
+//
+//	mapping(bytes32 => mapping(bytes32 => bytes32))
+//
+// Deprecated: Use SoliditySlot2 instead.
+func Slot2(pos, key0, key1 common.Hash) common.Hash {
+	return SoliditySlot2(pos, key0, key1)
 }
 
-// nilToZero converts sets a pointer to the zero value if it is nil.
-func nilToZero[T any](ptr *T) *T {
-	if ptr == nil {
-		return new(T)
-	}
-	return ptr
+// Slot3 returns the storage slot of a triple mapping with the given position
+// and keys.
+//
+// Slot3 follows the Solidity storage layout for:
+//
+//	mapping(bytes32 => mapping(bytes32 => mapping(bytes32 => bytes32)))
+//
+// Deprecated: Use SoliditySlot3 instead.
+func Slot3(pos, key0, key1, key2 common.Hash) common.Hash {
+	return SoliditySlot3(pos, key0, key1, key2)
 }
 
 // zeroHashFunc implements a [vm.GetHashFunc] that always returns the zero hash.
@@ -81,15 +152,6 @@ func ethBalance(addr common.Address, blockNumber *big.Int) w3types.RPCCallerFact
 		"eth_getBalance",
 		[]any{addr, module.BlockNumberArg(blockNumber)},
 		module.WithRetWrapper(func(ret *uint256.Int) any { return (*hexutil.U256)(ret) }),
-	)
-}
-
-// ethStorageAt is like [eth.StorageAt], but returns the storage value as [uint256.Int].
-func ethStorageAt(addr common.Address, slot common.Hash, blockNumber *big.Int) w3types.RPCCallerFactory[common.Hash] {
-	return module.NewFactory(
-		"eth_getStorageAt",
-		[]any{addr, slot, module.BlockNumberArg(blockNumber)},
-		module.WithRetWrapper(func(ret *common.Hash) any { return (*w3hexutil.Hash)(ret) }),
 	)
 }
 
@@ -120,8 +182,6 @@ func joinHooks(hooks []*tracing.Hooks) *tracing.Hooks {
 	}
 
 	// vm hooks
-	var onTxStarts []tracing.TxStartHook
-	var onTxEnds []tracing.TxEndHook
 	var onEnters []tracing.EnterHook
 	var onExits []tracing.ExitHook
 	var onOpcodes []tracing.OpcodeHook
@@ -139,12 +199,6 @@ func joinHooks(hooks []*tracing.Hooks) *tracing.Hooks {
 			continue
 		}
 		// vm hooks
-		if h.OnTxStart != nil {
-			onTxStarts = append(onTxStarts, h.OnTxStart)
-		}
-		if h.OnTxEnd != nil {
-			onTxEnds = append(onTxEnds, h.OnTxEnd)
-		}
 		if h.OnEnter != nil {
 			onEnters = append(onEnters, h.OnEnter)
 		}
@@ -180,20 +234,6 @@ func joinHooks(hooks []*tracing.Hooks) *tracing.Hooks {
 
 	hook := new(tracing.Hooks)
 	// vm hooks
-	if len(onTxStarts) > 0 {
-		hook.OnTxStart = func(vm *tracing.VMContext, tx *types.Transaction, from common.Address) {
-			for _, h := range onTxStarts {
-				h(vm, tx, from)
-			}
-		}
-	}
-	if len(onTxEnds) > 0 {
-		hook.OnTxEnd = func(receipt *types.Receipt, err error) {
-			for _, h := range onTxEnds {
-				h(receipt, err)
-			}
-		}
-	}
 	if len(onEnters) > 0 {
 		hook.OnEnter = func(depth int, typ byte, from, to common.Address, input []byte, gas uint64, value *big.Int) {
 			for _, h := range onEnters {
@@ -266,37 +306,4 @@ func joinHooks(hooks []*tracing.Hooks) *tracing.Hooks {
 		}
 	}
 	return hook
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Testing /////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-func getTbFilepath(tb testing.TB) string {
-	// Find test name of the root test (drop subtests from name).
-	if tb == nil || tb.Name() == "" {
-		return ""
-	}
-	tn := strings.SplitN(tb.Name(), "/", 2)[0]
-
-	// Find the test function in the call stack. Don't go deeper than 32 frames.
-	for i := range 32 {
-		pc, file, _, ok := runtime.Caller(i)
-		if !ok {
-			break
-		}
-
-		fn := runtime.FuncForPC(pc).Name()
-		_, fn = filepath.Split(fn)
-		fn = strings.SplitN(fn, ".", 3)[1]
-
-		if fn == tn {
-			return filepath.Dir(file)
-		}
-	}
-	return ""
-}
-
-func isTbInMod(fp string) bool {
-	return mod.Root != "" && strings.HasPrefix(fp, mod.Root)
 }

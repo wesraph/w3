@@ -3,7 +3,6 @@ package w3_test
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"math/big"
 	"strconv"
 	"testing"
@@ -16,86 +15,11 @@ import (
 	"github.com/lmittmann/w3/w3types"
 )
 
-func ExampleNewFunc_balanceOf() {
-	// ABI binding to the balanceOf function of an ERC20 Token.
-	funcBalanceOf, _ := w3.NewFunc("balanceOf(address)", "uint256")
-
-	// Optionally names can be specified for function arguments. This is
-	// especially useful for more complex functions with many arguments.
-	funcBalanceOf, _ = w3.NewFunc("balanceOf(address who)", "uint256 amount")
-
-	// ABI-encode the functions args.
-	input, _ := funcBalanceOf.EncodeArgs(w3.A("0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B"))
-	fmt.Printf("balanceOf input: 0x%x\n", input)
-
-	// ABI-decode the functions args from a given input.
-	var (
-		who common.Address
-	)
-	funcBalanceOf.DecodeArgs(input, &who)
-	fmt.Printf("balanceOf args: %v\n", who)
-
-	// ABI-decode the functions output.
-	var (
-		output = w3.B("0x000000000000000000000000000000000000000000000000000000000000c0fe")
-		amount = new(big.Int)
-	)
-	funcBalanceOf.DecodeReturns(output, amount)
-	fmt.Printf("balanceOf returns: %v\n", amount)
-	// Output:
-	// balanceOf input: 0x70a08231000000000000000000000000ab5801a7d398351b8be11c439e05c5b3259aec9b
-	// balanceOf args: 0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B
-	// balanceOf returns: 49406
-}
-
-func ExampleNewFunc_uniswapV4Swap() {
-	// ABI binding for the Uniswap v4 swap function.
-	funcSwap, _ := w3.NewFunc(`swap(
-		(address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks) key,
-		(bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96) params,
-		bytes hookData
-	)`, "int256 delta")
-
-	// ABI binding for the PoolKey struct.
-	type PoolKey struct {
-		Currency0   common.Address
-		Currency1   common.Address
-		Fee         *big.Int
-		TickSpacing *big.Int
-		Hooks       common.Address
-	}
-
-	// ABI binding for the SwapParams struct.
-	type SwapParams struct {
-		ZeroForOne        bool
-		AmountSpecified   *big.Int
-		SqrtPriceLimitX96 *big.Int
-	}
-
-	// ABI-encode the functions args.
-	input, _ := funcSwap.EncodeArgs(
-		&PoolKey{
-			Currency0:   w3.A("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
-			Currency1:   w3.A("0x6B175474E89094C44Da98b954EedeAC495271d0F"),
-			Fee:         big.NewInt(0),
-			TickSpacing: big.NewInt(0),
-		},
-		&SwapParams{
-			ZeroForOne:        false,
-			AmountSpecified:   big.NewInt(0),
-			SqrtPriceLimitX96: big.NewInt(0),
-		},
-		[]byte{},
-	)
-	fmt.Printf("swap input: 0x%x\n", input)
-	// Output:
-	// swap input: 0xf3cd914c000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc20000000000000000000000006b175474e89094c44da98b954eedeac495271d0f00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001200000000000000000000000000000000000000000000000000000000000000000
-}
-
 func TestNewFunc(t *testing.T) {
 	tests := []struct {
 		Signature string
 		Returns   string
+		Tuples    []any
 		WantFunc  *w3.Func
 	}{
 		{
@@ -114,11 +38,38 @@ func TestNewFunc(t *testing.T) {
 				Selector:  [4]byte{0xa9, 0x05, 0x9c, 0xbb},
 			},
 		},
+		{
+			Signature: "testTuple(tuple)",
+			Returns:   "bool",
+			Tuples:    []any{tuple{}},
+			WantFunc: &w3.Func{
+				Signature: "testTuple((address,uint256))",
+				Selector:  [4]byte{0xa0, 0x54, 0xdf, 0xd5},
+			},
+		},
+		{
+			Signature: "testTuple(tupleWithTag)",
+			Returns:   "bool",
+			Tuples:    []any{tupleWithTag{}},
+			WantFunc: &w3.Func{
+				Signature: "testTuple((address,uint128))",
+				Selector:  [4]byte{0xa8, 0x97, 0xff, 0xb3},
+			},
+		},
+		{
+			Signature: "testTuple(tupleWithNesting)",
+			Returns:   "bool",
+			Tuples:    []any{tupleWithNesting{}},
+			WantFunc: &w3.Func{
+				Signature: "testTuple((address,(address,uint256)))",
+				Selector:  [4]byte{0xff, 0x4c, 0x07, 0xd1},
+			},
+		},
 	}
 
 	for i, test := range tests {
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			gotFunc, err := w3.NewFunc(test.Signature, test.Returns)
+			gotFunc, err := w3.NewFunc(test.Signature, test.Returns, test.Tuples...)
 			if err != nil {
 				t.Fatalf("Failed to create new FUnc: %v", err)
 			}
@@ -209,6 +160,16 @@ func TestFuncEncodeArgs(t *testing.T) {
 			Want: w3.B("0x3a91207700000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000c0000000000000000000000000111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000002c0fe000000000000000000000000000000000000000000000000000000000000000000000000000000000000222222222222222222222222222222222222222200000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000004deadbeef00000000000000000000000000000000000000000000000000000000"),
 		},
 		{
+			Func: w3.MustNewFunc("test(tupleWithBytes[] calls)", "", tupleWithBytes{}),
+			Args: []any{
+				[]tupleWithBytes{
+					{Arg0: w3.A("0x1111111111111111111111111111111111111111"), Arg1: w3.B("0xc0fe")},
+					{Arg0: w3.A("0x2222222222222222222222222222222222222222"), Arg1: w3.B("0xdeadbeef")},
+				},
+			},
+			Want: w3.B("0x3a91207700000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000c0000000000000000000000000111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000002c0fe000000000000000000000000000000000000000000000000000000000000000000000000000000000000222222222222222222222222222222222222222200000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000004deadbeef00000000000000000000000000000000000000000000000000000000"),
+		},
+		{
 			Func: w3.MustNewFunc("test(uint[])", ""),
 			Args: []any{
 				[]*big.Int{big.NewInt(0xdead), big.NewInt(0xbeef)},
@@ -235,6 +196,14 @@ func TestFuncEncodeArgs(t *testing.T) {
 				[2]uint64{0xdead, 0xbeef},
 			},
 			Want: w3.B("0x533d6285000000000000000000000000000000000000000000000000000000000000dead000000000000000000000000000000000000000000000000000000000000beef"),
+		},
+		{
+			Func: w3.MustNewFunc("testTuple(tuple)", "bool", tuple{}),
+			Args: []any{&tuple{
+				Arg0: w3.A("0x000000000000000000000000000000000000c0Fe"),
+				Arg1: big.NewInt(42),
+			}},
+			Want: w3.B("0xa054dfd5000000000000000000000000000000000000000000000000000000000000c0fe000000000000000000000000000000000000000000000000000000000000002a"),
 		},
 		{ // https://github.com/lmittmann/w3/issues/35
 			Func: w3.MustNewFunc("test(((address to)[] recipients) param)", ""),
@@ -310,6 +279,15 @@ func TestFuncDecodeArgs(t *testing.T) {
 		},
 		{
 			Func:  w3.MustNewFunc("test((address arg0, uint256 arg1))", ""),
+			Input: w3.B("0xba71720c000000000000000000000000000000000000000000000000000000000000c0fe000000000000000000000000000000000000000000000000000000000000002a"),
+			Args:  []any{new(tuple)},
+			WantArgs: []any{&tuple{
+				Arg0: w3.A("0x000000000000000000000000000000000000c0Fe"),
+				Arg1: big.NewInt(42),
+			}},
+		},
+		{
+			Func:  w3.MustNewFunc("test(tuple)", "", tuple{}),
 			Input: w3.B("0xba71720c000000000000000000000000000000000000000000000000000000000000c0fe000000000000000000000000000000000000000000000000000000000000002a"),
 			Args:  []any{new(tuple)},
 			WantArgs: []any{&tuple{
@@ -422,6 +400,15 @@ func TestFuncDecodeArgs(t *testing.T) {
 				&[2]uint64{0xdead, 0xbeef},
 			},
 		},
+		{
+			Func:  w3.MustNewFunc("testTuple(tuple)", "bool", tuple{}),
+			Input: w3.B("0xa054dfd5000000000000000000000000000000000000000000000000000000000000c0fe000000000000000000000000000000000000000000000000000000000000002a"),
+			Args:  []any{new(tuple)},
+			WantArgs: []any{&tuple{
+				Arg0: w3.A("0x000000000000000000000000000000000000c0Fe"),
+				Arg1: big.NewInt(42),
+			}},
+		},
 		{ // https://github.com/lmittmann/w3/issues/35
 			Func:  w3.MustNewFunc("test(((address to)[] recipients) param)", ""),
 			Input: w3.B("0xf61d1a2a00000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000200000000000000000000000011111111111111111111111111111111111111110000000000000000000000002222222222222222222222222222222222222222"),
@@ -514,6 +501,15 @@ func TestFuncDecodeReturns(t *testing.T) {
 				Arg1: big.NewInt(42),
 			}},
 		},
+		{
+			Func:    w3.MustNewFunc("test()", "tuple", tuple{}),
+			Output:  w3.B("0x000000000000000000000000000000000000000000000000000000000000c0fe000000000000000000000000000000000000000000000000000000000000002a"),
+			Returns: []any{new(tuple)},
+			WantReturns: []any{&tuple{
+				Arg0: w3.A("0x000000000000000000000000000000000000c0Fe"),
+				Arg1: big.NewInt(42),
+			}},
+		},
 	}
 
 	for i, test := range tests {
@@ -533,6 +529,16 @@ func ptr[T any](v T) *T { return &v }
 type tuple struct {
 	Arg0 common.Address
 	Arg1 *big.Int
+}
+
+type tupleWithTag struct {
+	Arg0 common.Address `abitype:"address"`
+	Arg1 *big.Int       `abitype:"uint128"`
+}
+
+type tupleWithNesting struct {
+	Arg0 common.Address
+	Arg1 tuple
 }
 
 type tupleWithBytes struct {
@@ -566,4 +572,20 @@ type tupleIssue35 struct {
 type tupleNested struct {
 	Arg0 common.Address
 	Arg1 tuple
+}
+
+func BenchmarkFuncEncode(b *testing.B) {
+	var (
+		funcSwap   = w3.MustNewFunc("swap(uint amount0Out, uint amount1Out, address to, bytes data)", "")
+		amount0Out = big.NewInt(1000000000000000000) // 1 ETH
+		amount1Out = big.NewInt(0)                   // 0 token
+		to         = w3.A("0x000000000000000000000000000000000000c0Fe")
+		data       = []byte{}
+	)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		funcSwap.EncodeArgs(amount0Out, amount1Out, to, data)
+	}
 }

@@ -2,25 +2,27 @@ package w3vm_test
 
 import (
 	"bytes"
+	"cmp"
 	_ "embed"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/google/go-cmp/cmp"
+	gocmp "github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/lmittmann/w3"
 	"github.com/lmittmann/w3/internal"
@@ -42,8 +44,9 @@ var (
 	funcBalanceOf = w3.MustNewFunc("balanceOf(address)", "uint256")
 	funcTransfer  = w3.MustNewFunc("transfer(address,uint256)", "bool")
 
-	client = w3.MustDial("https://rpc.ankr.com/eth", w3.WithRateLimiter(
-		rate.NewLimiter(rate.Every(time.Minute/300), 100),
+	testArchiveRPC = cmp.Or(os.Getenv("RPC_MAINNET"), "https://eth.llamarpc.com")
+	testClient     = w3.MustDial(testArchiveRPC, w3.WithRateLimiter(
+		rate.NewLimiter(rate.Every(time.Second/20), 100),
 		func(methods []string) (cost int) { return len(methods) },
 	))
 )
@@ -147,8 +150,8 @@ func TestVMApply(t *testing.T) {
 				Value: w3.I("1 ether"),
 			},
 			WantReceipt: &w3vm.Receipt{
-				GasUsed:  21_000,
-				GasLimit: 21_000,
+				GasUsed:    21_000,
+				MaxGasUsed: 21_000,
 			},
 		},
 		{ // WETH transfer
@@ -156,7 +159,7 @@ func TestVMApply(t *testing.T) {
 				addr0: {Balance: w3.I("1 ether")},
 				addrWETH: {
 					Code: codeWETH,
-					Storage: map[common.Hash]common.Hash{
+					Storage: w3types.Storage{
 						w3vm.WETHBalanceSlot(addr0): common.BigToHash(w3.I("1 ether")),
 					},
 				},
@@ -168,9 +171,8 @@ func TestVMApply(t *testing.T) {
 				Gas:   100_000,
 			},
 			WantReceipt: &w3vm.Receipt{
-				GasUsed:   38_853,
-				GasRefund: 9_713,
-				GasLimit:  58_753,
+				GasUsed:    38_853,
+				MaxGasUsed: 48_566,
 				Logs: []*types.Log{
 					{
 						Address: addrWETH,
@@ -190,7 +192,7 @@ func TestVMApply(t *testing.T) {
 				addr0: {Balance: w3.I("1 ether")},
 				addrWETH: {
 					Code: codeWETH,
-					Storage: map[common.Hash]common.Hash{
+					Storage: w3types.Storage{
 						w3vm.WETHBalanceSlot(addr0): common.BigToHash(w3.I("1 ether")),
 					},
 				},
@@ -202,9 +204,9 @@ func TestVMApply(t *testing.T) {
 				Gas:   100_000,
 			},
 			WantReceipt: &w3vm.Receipt{
-				GasUsed:  24_019,
-				GasLimit: 24_019,
-				Err:      errors.New("execution reverted"),
+				GasUsed:    24_019,
+				MaxGasUsed: 24_019,
+				Err:        errors.New("execution reverted"),
 			},
 			WantErr: errors.New("execution reverted"),
 		},
@@ -218,10 +220,10 @@ func TestVMApply(t *testing.T) {
 				To:   &addr1,
 			},
 			WantReceipt: &w3vm.Receipt{
-				GasUsed:  21_008,
-				GasLimit: 21_008,
-				Output:   w3.B("0x00"),
-				Err:      errors.New("execution reverted"),
+				GasUsed:    21_008,
+				MaxGasUsed: 21_008,
+				Output:     w3.B("0x00"),
+				Err:        errors.New("execution reverted"),
 			},
 			WantErr: errors.New("execution reverted"),
 		},
@@ -232,7 +234,7 @@ func TestVMApply(t *testing.T) {
 			},
 			WantReceipt: &w3vm.Receipt{
 				GasUsed:         53_006,
-				GasLimit:        53_006,
+				MaxGasUsed:      53_006,
 				ContractAddress: ptr(crypto.CreateAddress(addr1, 0)),
 			},
 		},
@@ -246,7 +248,7 @@ func TestVMApply(t *testing.T) {
 			},
 			WantReceipt: &w3vm.Receipt{
 				GasUsed:         53_006,
-				GasLimit:        53_006,
+				MaxGasUsed:      53_006,
 				ContractAddress: ptr(crypto.CreateAddress(addr1, 1)),
 			},
 		},
@@ -265,8 +267,8 @@ func TestVMApply(t *testing.T) {
 				Value: w3.I("1 ether"),
 			},
 			WantReceipt: &w3vm.Receipt{
-				GasUsed:  21_000,
-				GasLimit: 21_000,
+				GasUsed:    21_000,
+				MaxGasUsed: 21_000,
 			},
 		},
 	}
@@ -277,12 +279,12 @@ func TestVMApply(t *testing.T) {
 				w3vm.WithState(test.PreState),
 			)
 			gotReceipt, gotErr := vm.Apply(test.Message)
-			if diff := cmp.Diff(test.WantErr, gotErr,
+			if diff := gocmp.Diff(test.WantErr, gotErr,
 				internal.EquateErrors(),
 			); diff != "" {
 				t.Fatalf("(-want +got)\n%s", diff)
 			}
-			if diff := cmp.Diff(test.WantReceipt, gotReceipt,
+			if diff := gocmp.Diff(test.WantReceipt, gotReceipt,
 				internal.EquateErrors(),
 				cmpopts.IgnoreUnexported(w3vm.Receipt{}),
 				cmpopts.EquateComparable(common.Address{}, common.Hash{}),
@@ -290,6 +292,48 @@ func TestVMApply(t *testing.T) {
 				t.Fatalf("(-want +got)\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestVMApply_Hook(t *testing.T) {
+	vm, err := w3vm.New(
+		w3vm.WithNoBaseFee(),
+		w3vm.WithFork(testClient, big.NewInt(20_000_000)),
+		w3vm.WithTB(t),
+	)
+	if err != nil {
+		t.Fatalf("Failed to create VM: %v", err)
+	}
+
+	// setup hook
+	var hookCount [10]uint
+	hook := &tracing.Hooks{
+		// vm event hooks
+		OnEnter:     func(int, byte, common.Address, common.Address, []byte, uint64, *big.Int) { hookCount[0]++ },
+		OnExit:      func(int, []byte, uint64, error, bool) { hookCount[1]++ },
+		OnOpcode:    func(uint64, byte, uint64, uint64, tracing.OpContext, []byte, int, error) { hookCount[2]++ },
+		OnFault:     func(uint64, byte, uint64, uint64, tracing.OpContext, int, error) { hookCount[3]++ },
+		OnGasChange: func(uint64, uint64, tracing.GasChangeReason) { hookCount[4]++ },
+		// state hooks
+		OnBalanceChange: func(common.Address, *big.Int, *big.Int, tracing.BalanceChangeReason) { hookCount[5]++ },
+		OnNonceChange:   func(addr common.Address, prev, new uint64) { hookCount[6]++ },
+		OnCodeChange:    func(common.Address, common.Hash, []byte, common.Hash, []byte) { hookCount[7]++ },
+		OnStorageChange: func(addr common.Address, slot, prev, new common.Hash) { hookCount[8]++ },
+		OnLog:           func(*types.Log) { hookCount[9]++ },
+	}
+
+	vm.Apply(&w3types.Message{To: &addrWETH, Value: w3.Big1}, hook)
+	vm.Apply(&w3types.Message{To: nil, Input: w3.B("0xfe")}, hook)                   // fault
+	vm.Apply(&w3types.Message{To: nil, Input: w3.B("0x61dead5f526002601ef3")}, hook) // deploy non-empty contract with bytecode 0xdead
+
+	for i, field := range []string{
+		"OnEnter", "OnExit", "OnOpcode", "OnFault", "OnGasChange", // vm event hooks
+		"OnBalanceChange", "OnNonceChange", "OnCodeChange", "OnStorageChange", "OnLog", // state hooks
+	} {
+		if hookCount[i] > 0 {
+			continue
+		}
+		t.Fatalf("Hook %q was not triggered", field)
 	}
 }
 
@@ -345,6 +389,180 @@ func TestVMSnapshot(t *testing.T) {
 	}
 }
 
+func TestVMSnapshot_Logs(t *testing.T) {
+	var (
+		preState = w3types.State{
+			addrWETH: {
+				Code: codeWETH,
+				Storage: w3types.Storage{
+					w3vm.WETHBalanceSlot(addr0): common.BigToHash(w3.I("10 ether")),
+				},
+			},
+		}
+		transferMsg = &w3types.Message{
+			From: addr0,
+			To:   &addrWETH,
+			Func: funcTransfer,
+			Args: []any{addr1, w3.I("1 ether")},
+		}
+	)
+
+	tests := []struct {
+		Name string
+		F    func() (receipt0, receipt1 *w3vm.Receipt, err error)
+	}{
+		{
+			Name: "rollback_0",
+			F: func() (receipt0, receipt1 *w3vm.Receipt, err error) {
+				vm, _ := w3vm.New(w3vm.WithState(preState))
+
+				snap := vm.Snapshot()
+
+				receipt0, err = vm.Apply(transferMsg)
+				if err != nil {
+					return
+				}
+
+				vm.Rollback(snap)
+
+				receipt1, err = vm.Apply(transferMsg)
+				return
+			},
+		},
+		{
+			Name: "rollback_1",
+			F: func() (receipt0, receipt1 *w3vm.Receipt, err error) {
+				vm, _ := w3vm.New(w3vm.WithState(preState))
+
+				if _, err = vm.Apply(transferMsg); err != nil {
+					return
+				}
+
+				snap := vm.Snapshot()
+
+				receipt0, err = vm.Apply(transferMsg)
+				if err != nil {
+					return
+				}
+
+				vm.Rollback(snap)
+
+				receipt1, err = vm.Apply(transferMsg)
+				return
+			},
+		},
+		{
+			Name: "rollback_2",
+			F: func() (receipt0, receipt1 *w3vm.Receipt, err error) {
+				vm, _ := w3vm.New(w3vm.WithState(preState))
+
+				receipt0, err = vm.Apply(transferMsg)
+				if err != nil {
+					return
+				}
+
+				snap := vm.Snapshot()
+				vm.Rollback(snap)
+
+				receipt1, err = vm.Apply(transferMsg)
+				return
+			},
+		},
+		{
+			Name: "rollback_3",
+			F: func() (receipt0, receipt1 *w3vm.Receipt, err error) {
+				vm, _ := w3vm.New(w3vm.WithState(preState))
+
+				if _, err = vm.Apply(transferMsg); err != nil {
+					return
+				}
+
+				snap := vm.Snapshot()
+				receipt0, err = vm.Apply(transferMsg)
+				if err != nil {
+					return
+				}
+
+				vm2, _ := w3vm.New(w3vm.WithState(preState))
+				vm2.Rollback(snap)
+
+				receipt1, err = vm2.Apply(transferMsg)
+				return
+			},
+		},
+		{
+			Name: "new_0",
+			F: func() (receipt0, receipt1 *w3vm.Receipt, err error) {
+				vm, _ := w3vm.New(w3vm.WithState(preState))
+
+				snap := vm.Snapshot()
+
+				receipt0, err = vm.Apply(transferMsg)
+				if err != nil {
+					return
+				}
+
+				vm, _ = w3vm.New(w3vm.WithStateDB(snap))
+
+				receipt1, err = vm.Apply(transferMsg)
+				return
+			},
+		},
+		{
+			Name: "new_1",
+			F: func() (receipt0, receipt1 *w3vm.Receipt, err error) {
+				vm, _ := w3vm.New(w3vm.WithState(preState))
+
+				if _, err = vm.Apply(transferMsg); err != nil {
+					return
+				}
+
+				snap := vm.Snapshot()
+
+				receipt0, err = vm.Apply(transferMsg)
+				if err != nil {
+					return
+				}
+
+				vm, _ = w3vm.New(w3vm.WithStateDB(snap))
+
+				receipt1, err = vm.Apply(transferMsg)
+				return
+			},
+		},
+		{
+			Name: "new_2",
+			F: func() (receipt0, receipt1 *w3vm.Receipt, err error) {
+				vm, _ := w3vm.New(w3vm.WithState(preState))
+
+				receipt0, err = vm.Apply(transferMsg)
+				if err != nil {
+					return
+				}
+
+				snap := vm.Snapshot()
+				vm, _ = w3vm.New(w3vm.WithStateDB(snap))
+
+				receipt1, err = vm.Apply(transferMsg)
+				return
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.Name, func(t *testing.T) {
+			receipt0, receipt1, err := test.F()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if diff := gocmp.Diff(receipt0.Logs, receipt1.Logs); diff != "" {
+				t.Fatalf("(-want +got)\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestVMCall(t *testing.T) {
 	tests := []struct {
 		PreState    w3types.State
@@ -356,7 +574,7 @@ func TestVMCall(t *testing.T) {
 			PreState: w3types.State{
 				addrWETH: {
 					Code: codeWETH,
-					Storage: map[common.Hash]common.Hash{
+					Storage: w3types.Storage{
 						w3vm.WETHBalanceSlot(addr0): common.BigToHash(w3.I("1 ether")),
 					},
 				},
@@ -367,9 +585,9 @@ func TestVMCall(t *testing.T) {
 				Input: mustEncodeArgs(funcBalanceOf, addr0),
 			},
 			WantReceipt: &w3vm.Receipt{
-				GasUsed:  23_726,
-				GasLimit: 23_726,
-				Output:   w3.B("0x0000000000000000000000000000000000000000000000000de0b6b3a7640000"),
+				GasUsed:    23_726,
+				MaxGasUsed: 23_726,
+				Output:     w3.B("0x0000000000000000000000000000000000000000000000000de0b6b3a7640000"),
 			},
 		},
 	}
@@ -380,12 +598,12 @@ func TestVMCall(t *testing.T) {
 				w3vm.WithState(test.PreState),
 			)
 			gotReceipt, gotErr := vm.Call(test.Message)
-			if diff := cmp.Diff(test.WantErr, gotErr,
+			if diff := gocmp.Diff(test.WantErr, gotErr,
 				internal.EquateErrors(),
 			); diff != "" {
 				t.Fatalf("(-want +got)\n%s", diff)
 			}
-			if diff := cmp.Diff(test.WantReceipt, gotReceipt,
+			if diff := gocmp.Diff(test.WantReceipt, gotReceipt,
 				internal.EquateErrors(),
 				cmpopts.IgnoreUnexported(w3vm.Receipt{}),
 				cmpopts.EquateComparable(common.Address{}, common.Hash{}),
@@ -401,7 +619,7 @@ func TestVMCallFunc(t *testing.T) {
 		w3vm.WithState(w3types.State{
 			addrWETH: {
 				Code: codeWETH,
-				Storage: map[common.Hash]common.Hash{
+				Storage: w3types.Storage{
 					w3vm.WETHBalanceSlot(addr0): common.BigToHash(w3.I("1 ether")),
 				},
 			},
@@ -453,6 +671,96 @@ func TestVM_Fetcher(t *testing.T) {
 	}
 }
 
+func TestVM_BaseFee(t *testing.T) {
+	// contract that returns GASPRICE
+	code := w3.B("3a", "5f", "52", "6020", "5f", "f3")
+	codeAddr := common.Address{0xc0, 0xde}
+
+	preState := w3types.State{
+		codeAddr: {Code: code},
+		w3.Addr0: {Balance: w3.I("1000 ether")},
+	}
+
+	tests := []struct {
+		Name         string
+		Msg          *w3types.Message
+		Opts         []w3vm.Option
+		WantGasPrice *big.Int
+		WantErr      error
+	}{
+		{
+			Name:         "BaseFee0_GasPrice",
+			Msg:          &w3types.Message{To: &codeAddr, GasPrice: big.NewInt(10)},
+			Opts:         []w3vm.Option{},
+			WantGasPrice: big.NewInt(10),
+		},
+		{
+			Name:         "BaseFee1_GasPrice",
+			Msg:          &w3types.Message{To: &codeAddr, GasPrice: big.NewInt(10)},
+			Opts:         []w3vm.Option{w3vm.WithHeader(&types.Header{BaseFee: big.NewInt(1)})},
+			WantGasPrice: big.NewInt(10),
+		},
+		{
+			Name:    "BaseFee100_GasPrice",
+			Msg:     &w3types.Message{To: &codeAddr, GasPrice: big.NewInt(10)},
+			Opts:    []w3vm.Option{w3vm.WithHeader(&types.Header{BaseFee: big.NewInt(100)})},
+			WantErr: core.ErrFeeCapTooLow,
+		},
+		{
+			Name:         "NoBaseFee100_GasPrice",
+			Msg:          &w3types.Message{To: &codeAddr, GasPrice: big.NewInt(10)},
+			Opts:         []w3vm.Option{w3vm.WithHeader(&types.Header{BaseFee: big.NewInt(100)}), w3vm.WithNoBaseFee()},
+			WantGasPrice: big.NewInt(0),
+		},
+
+		{
+			Name:         "BaseFee0_GasFeeCap",
+			Msg:          &w3types.Message{To: &codeAddr, GasFeeCap: big.NewInt(10)},
+			Opts:         []w3vm.Option{},
+			WantGasPrice: big.NewInt(0),
+		},
+		{
+			Name:         "BaseFee0_GasFeeCap_GasTipCap",
+			Msg:          &w3types.Message{To: &codeAddr, GasFeeCap: big.NewInt(10), GasTipCap: big.NewInt(5)},
+			Opts:         []w3vm.Option{},
+			WantGasPrice: big.NewInt(5),
+		},
+		{
+			Name:         "BaseFee1_GasFeeCap",
+			Msg:          &w3types.Message{To: &codeAddr, GasFeeCap: big.NewInt(10)},
+			Opts:         []w3vm.Option{w3vm.WithHeader(&types.Header{BaseFee: big.NewInt(1)})},
+			WantGasPrice: big.NewInt(1),
+		},
+		{
+			Name:    "BaseFee100_GasFeeCap",
+			Msg:     &w3types.Message{To: &codeAddr, GasFeeCap: big.NewInt(10)},
+			Opts:    []w3vm.Option{w3vm.WithHeader(&types.Header{BaseFee: big.NewInt(100)})},
+			WantErr: core.ErrFeeCapTooLow,
+		},
+		{
+			Name:         "NoBaseFee100_GasFeeCap",
+			Msg:          &w3types.Message{To: &codeAddr, GasFeeCap: big.NewInt(10)},
+			Opts:         []w3vm.Option{w3vm.WithHeader(&types.Header{BaseFee: big.NewInt(100)}), w3vm.WithNoBaseFee()},
+			WantGasPrice: big.NewInt(0),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.Name, func(t *testing.T) {
+			vm, _ := w3vm.New(append(test.Opts, w3vm.WithState(preState))...)
+			receipt, gotErr := vm.Apply(test.Msg)
+			if !errors.Is(gotErr, test.WantErr) {
+				t.Fatalf("Error: want %v, got %v", test.WantErr, gotErr)
+			} else if receipt == nil {
+				return
+			}
+			if gotGasPrice := new(big.Int).SetBytes(receipt.Output); test.WantGasPrice.Cmp(gotGasPrice) != 0 {
+				t.Fatalf("GasPrice: want %v, got %v", test.WantGasPrice, gotGasPrice)
+			}
+		})
+	}
+}
+
 type testFetcher struct{}
 
 func (f *testFetcher) Account(addr common.Address) (*types.StateAccount, error) {
@@ -476,110 +784,102 @@ func TestVMApply_Integration(t *testing.T) {
 		t.SkipNow()
 	}
 
-	blocks := []*big.Int{
-		big.NewInt(4_369_998),
-		big.NewInt(4_369_999),
-		big.NewInt(4_370_000), // Byzantium
-		big.NewInt(4_370_001),
-
-		big.NewInt(7_279_998),
-		big.NewInt(7_279_999),
-		big.NewInt(7_280_000), // Constantinople & Petersburg
-		big.NewInt(7_280_001),
-
-		big.NewInt(9_068_998),
-		big.NewInt(9_068_999),
-		big.NewInt(9_069_000), // Istanbul
-		big.NewInt(9_069_001),
-
-		big.NewInt(9_199_998),
-		big.NewInt(9_199_999),
-		big.NewInt(9_200_000), // Muir Glacier
-		big.NewInt(9_200_001),
-
-		big.NewInt(12_243_998),
-		big.NewInt(12_243_999),
-		big.NewInt(12_244_000), // Berlin
-		big.NewInt(12_244_001),
-
-		big.NewInt(12_964_998),
-		big.NewInt(12_964_999),
-		big.NewInt(12_965_000), // London
-		big.NewInt(12_965_001),
-
-		big.NewInt(13_772_998),
-		big.NewInt(13_772_999),
-		big.NewInt(13_773_000), // Arrow Glacier
-		big.NewInt(13_773_001),
-
-		big.NewInt(15_054_998),
-		big.NewInt(15_054_999),
-		big.NewInt(15_050_000), // Gray Glacier
-		big.NewInt(15_050_001),
-
-		big.NewInt(15_537_392),
-		big.NewInt(15_537_393),
-		big.NewInt(15_537_394), // Paris (The Merge)
-		big.NewInt(15_537_395),
-
-		big.NewInt(17_034_868),
-		big.NewInt(17_034_869),
-		big.NewInt(17_034_870), // Shanghai
-		big.NewInt(17_034_871),
-
-		big.NewInt(19_426_485),
-		big.NewInt(19_426_486),
-		big.NewInt(19_426_487), // Cancun
-		big.NewInt(19_426_488),
+	tests := []struct {
+		Name   string
+		Offset int64 // Start block number
+		Size   int64 // Number of blocks
+	}{
+		{Name: "Byzantium", Offset: 4_370_000 - 2, Size: 4},
+		{Name: "Constantinople&Petersburg", Offset: 7_280_000 - 2, Size: 4},
+		{Name: "Istanbul", Offset: 9_069_000 - 2, Size: 4},
+		{Name: "Muir Glacier", Offset: 9_200_000 - 2, Size: 4},
+		{Name: "Berlin", Offset: 12_244_000 - 2, Size: 4},
+		{Name: "London", Offset: 12_965_000 - 2, Size: 4},
+		{Name: "Arrow Glacier", Offset: 13_773_000 - 2, Size: 4},
+		{Name: "Gray Glacier", Offset: 15_050_000 - 2, Size: 4},
+		{Name: "Paris", Offset: 15_537_394 - 2, Size: 4}, // The Merge
+		{Name: "Shanghai", Offset: 17_034_870 - 2, Size: 4},
+		{Name: "Cancun", Offset: 19_426_487 - 2, Size: 4},
 	}
 
-	for _, number := range blocks {
-		t.Run(number.String(), func(t *testing.T) {
-			t.Parallel()
+	for _, test := range tests {
+		t.Run(test.Name, func(t *testing.T) {
+			// execute blocks
+			for i := test.Offset; i < test.Offset+test.Size; i++ {
+				// gather block and receipts
+				blockNumber := big.NewInt(i)
 
-			var (
-				block    types.Block
-				receipts types.Receipts
-			)
-			if err := client.Call(
-				eth.BlockByNumber(number).Returns(&block),
-				eth.BlockReceipts(number).Returns(&receipts),
-			); err != nil {
-				t.Fatalf("Failed to fetch block and receipts: %v", err)
-			}
+				t.Run(blockNumber.String(), func(t *testing.T) {
+					t.Parallel()
 
-			f := w3vm.NewTestingRPCFetcher(t, 1, client, new(big.Int).Sub(number, w3.Big1))
-			vm, _ := w3vm.New(
-				w3vm.WithFetcher(f),
-				w3vm.WithHeader(block.Header()),
-			)
-
-			for i, tx := range block.Transactions() {
-				t.Run(fmt.Sprintf("%d_%s", i, tx.Hash()), func(t *testing.T) {
-					wantReceipt := &w3vm.Receipt{
-						GasUsed: receipts[i].GasUsed,
-						Logs:    receipts[i].Logs,
-					}
-					if receipts[i].ContractAddress != addr0 {
-						wantReceipt.ContractAddress = &receipts[i].ContractAddress
-					}
-					if receipts[i].Status == types.ReceiptStatusFailed {
-						wantReceipt.Err = cmpopts.AnyError
+					// fetch block
+					var (
+						block    *types.Block
+						receipts types.Receipts
+					)
+					if err := testClient.Call(
+						eth.BlockByNumber(blockNumber).Returns(&block),
+						eth.BlockReceipts(blockNumber).Returns(&receipts),
+					); err != nil || len(block.Transactions()) != len(receipts) {
+						t.Fatalf("Failed to fetch block and receipts: %v", err)
 					}
 
-					gotReceipt, err := vm.ApplyTx(tx)
-					if err != nil && gotReceipt == nil {
-						t.Fatalf("Failed to apply tx: %v", err)
+					// setup vm
+					f := w3vm.NewTestingRPCFetcher(t, 1, testClient, big.NewInt(i-1))
+					vm, _ := w3vm.New(
+						w3vm.WithFetcher(f),
+						w3vm.WithHeader(block.Header()),
+					)
+
+					// execute txs
+					for j, tx := range block.Transactions() {
+						wantReceipt := &w3vm.Receipt{
+							GasUsed: receipts[j].GasUsed,
+							Logs:    receipts[j].Logs,
+						}
+						if receipts[j].ContractAddress != addr0 {
+							wantReceipt.ContractAddress = &receipts[j].ContractAddress
+						}
+						if receipts[j].Status == types.ReceiptStatusFailed {
+							wantReceipt.Err = cmpopts.AnyError
+						}
+
+						gotReceipt, err := vm.ApplyTx(tx)
+						if err != nil && gotReceipt == nil {
+							t.Fatalf("Failed to apply tx %d (%s): %v", j, tx.Hash(), err)
+						}
+						if diff := gocmp.Diff(wantReceipt, gotReceipt,
+							cmpopts.EquateEmpty(),
+							cmpopts.EquateErrors(),
+							cmpopts.IgnoreUnexported(w3vm.Receipt{}),
+							cmpopts.IgnoreFields(w3vm.Receipt{}, "MaxGasUsed", "Output"),
+							cmpopts.IgnoreFields(types.Log{}, "BlockHash", "BlockNumber", "BlockTimestamp", "TxHash", "TxIndex", "Index"),
+							cmpopts.EquateComparable(common.Address{}, common.Hash{}),
+						); diff != "" {
+							t.Fatalf("[%v,%d,%s] (-want +got)\n%s", block.Number(), j, tx.Hash(), diff)
+						}
 					}
-					if diff := cmp.Diff(wantReceipt, gotReceipt,
-						cmpopts.EquateEmpty(),
-						cmpopts.EquateErrors(),
-						cmpopts.IgnoreUnexported(w3vm.Receipt{}),
-						cmpopts.IgnoreFields(w3vm.Receipt{}, "GasRefund", "GasLimit", "Output"),
-						cmpopts.IgnoreFields(types.Log{}, "BlockHash", "BlockNumber", "TxHash", "TxIndex", "Index"),
-						cmpopts.EquateComparable(common.Address{}, common.Hash{}),
-					); diff != "" {
-						t.Fatalf("(-want +got)\n%s", diff)
+
+					// check coinbase balance at the end of the block
+					if !params.MainnetChainConfig.IsShanghai(block.Number(), block.Time()) {
+						return // only check postmerge blocks for correct coinbase balance
+					}
+
+					var wantCoinbaseBal *big.Int
+					if err := testClient.Call(
+						eth.Balance(block.Coinbase(), block.Number()).Returns(&wantCoinbaseBal),
+					); err != nil {
+						t.Fatalf("Failed to fetch coinbase balance: %v", err)
+					}
+
+					// actual coinbase balance after all txs were applied
+					gotCoinbaseBal, _ := vm.Balance(block.Coinbase())
+					if wantCoinbaseBal.Cmp(gotCoinbaseBal) != 0 {
+						t.Fatalf("Coinbase balance: want: %s, got: %s (%s)",
+							w3.FromWei(wantCoinbaseBal, 18),
+							w3.FromWei(gotCoinbaseBal, 18),
+							block.Coinbase(),
+						)
 					}
 				})
 			}
@@ -620,7 +920,7 @@ func BenchmarkTransferWETH9(b *testing.B) {
 			w3vm.WithState(w3types.State{
 				addrWETH: {
 					Code: codeWETH,
-					Storage: map[common.Hash]common.Hash{
+					Storage: w3types.Storage{
 						w3vm.WETHBalanceSlot(addr0): common.BigToHash(w3.I("1 ether")),
 					},
 				},
@@ -643,27 +943,27 @@ func BenchmarkTransferWETH9(b *testing.B) {
 	})
 
 	b.Run("geth", func(b *testing.B) {
-		stateDB, _ := state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
-		stateDB.SetCode(addrWETH, codeWETH)
+		stateDB, _ := state.New(common.Hash{}, state.NewDatabaseForTesting())
+		stateDB.SetCode(addrWETH, codeWETH, tracing.CodeChangeGenesis)
 		stateDB.SetState(addrWETH, w3vm.WETHBalanceSlot(addr0), common.BigToHash(w3.I("1 ether")))
 
 		b.ResetTimer()
 		for i := range b.N {
 			msg := &core.Message{
-				To:                &addrWETH,
-				From:              addr0,
-				Nonce:             uint64(i),
-				Value:             new(big.Int),
-				GasLimit:          100_000,
-				GasPrice:          new(big.Int),
-				GasFeeCap:         new(big.Int),
-				GasTipCap:         new(big.Int),
-				Data:              input,
-				AccessList:        nil,
-				SkipAccountChecks: false,
+				To:                    &addrWETH,
+				From:                  addr0,
+				Nonce:                 uint64(i),
+				Value:                 new(big.Int),
+				GasLimit:              100_000,
+				GasPrice:              new(big.Int),
+				GasFeeCap:             new(big.Int),
+				GasTipCap:             new(big.Int),
+				Data:                  input,
+				AccessList:            nil,
+				SkipNonceChecks:       false,
+				SkipTransactionChecks: false,
 			}
-			txCtx := core.NewEVMTxContext(msg)
-			evm := vm.NewEVM(blockCtx, txCtx, stateDB, params.AllEthashProtocolChanges, vm.Config{NoBaseFee: true})
+			evm := vm.NewEVM(blockCtx, stateDB, params.AllEthashProtocolChanges, vm.Config{NoBaseFee: true})
 			gp := new(core.GasPool).AddGas(math.MaxUint64)
 			_, err := core.ApplyMessage(evm, msg, gp)
 			if err != nil {
@@ -674,115 +974,146 @@ func BenchmarkTransferWETH9(b *testing.B) {
 	})
 }
 
-func ptr[T any](t T) *T { return &t }
+func TestVMClone(t *testing.T) {
+	t.Run("basic", func(t *testing.T) {
+		vm0, _ := w3vm.New(
+			w3vm.WithState(w3types.State{
+				addr0: {
+					Balance: w3.I("10 ether"),
+					Nonce:   5,
+				},
+				addrWETH: {
+					Code: codeWETH,
+					Storage: w3types.Storage{
+						w3vm.WETHBalanceSlot(addr0): common.BigToHash(w3.I("1 ether")),
+					},
+				},
+			}),
+		)
 
-func ExampleVM() {
-	var (
-		addrEOA    = w3.A("0x000000000000000000000000000000000000c0Fe")
-		addrWETH   = w3.A("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
-		addrUNI    = w3.A("0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984")
-		addrRouter = w3.A("0xE592427A0AEce92De3Edee1F18E0157C05861564")
+		// set code after creation
+		testCode := w3.B("0x5f5ff3") // PUSH0 PUSH0 RETURN
+		testAddr := common.Address{0x42}
+		vm0.SetCode(testAddr, testCode)
 
-		funcExactInput = w3.MustNewFunc(`exactInput(
-			(
-			bytes path,
-			address recipient,
-			uint256 deadline,
-			uint256 amountIn,
-			uint256 amountOutMinimum
-			) params
-		)`, "uint256 amountOut")
-	)
+		// clone the VM
+		vm1 := vm0.Clone()
 
-	type ExactInputParams struct {
-		Path             []byte
-		Recipient        common.Address
-		Deadline         *big.Int
-		AmountIn         *big.Int
-		AmountOutMinimum *big.Int
-	}
+		// verify cloned state matches original state
+		balance0, _ := vm0.Balance(addr0)
+		balance1, _ := vm1.Balance(addr0)
+		if diff := gocmp.Diff(balance0, balance1, gocmp.AllowUnexported(big.Int{})); diff != "" {
+			t.Errorf("Balance mismatch: (-want +got)\n%s", diff)
+		}
 
-	encodePath := func(tokenA common.Address, fee uint32, tokenB common.Address) []byte {
-		path := make([]byte, 43)
-		copy(path, tokenA[:])
-		path[20], path[21], path[22] = byte(fee>>16), byte(fee>>8), byte(fee)
-		copy(path[23:], tokenB[:])
-		return path
-	}
+		nonce0, _ := vm0.Nonce(addr0)
+		nonce1, _ := vm1.Nonce(addr0)
+		if nonce0 != nonce1 {
+			t.Errorf("Nonce mismatch: want %d, got %d", nonce0, nonce1)
+		}
 
-	client, err := w3.Dial("https://rpc.ankr.com/eth")
-	if err != nil {
-		// handle error
-	}
-	defer client.Close()
+		code1, _ := vm1.Code(testAddr)
+		if !bytes.Equal(testCode, code1) {
+			t.Errorf("Code mismatch: (-want +got)\n- %x\n+ %x", testCode, code1)
+		}
 
-	// 1. Create a VM that forks the Mainnet state from the latest block,
-	// disables the base fee, and has a fake WETH balance and approval for the router
-	vm, err := w3vm.New(
-		w3vm.WithFork(client, nil),
-		w3vm.WithNoBaseFee(),
-		w3vm.WithState(w3types.State{
-			addrWETH: {Storage: map[common.Hash]common.Hash{
-				w3vm.WETHBalanceSlot(addrEOA):               common.BigToHash(w3.I("1 ether")),
-				w3vm.WETHAllowanceSlot(addrEOA, addrRouter): common.BigToHash(w3.I("1 ether")),
-			}},
-		}),
-	)
-	if err != nil {
-		// handle error
-	}
-
-	// 2. Simulate a UniSwap v3 swap
-	receipt, err := vm.Apply(&w3types.Message{
-		From: addrEOA,
-		To:   &addrRouter,
-		Func: funcExactInput,
-		Args: []any{&ExactInputParams{
-			Path:             encodePath(addrWETH, 500, addrUNI),
-			Recipient:        addrEOA,
-			Deadline:         big.NewInt(time.Now().Unix()),
-			AmountIn:         w3.I("1 ether"),
-			AmountOutMinimum: w3.Big0,
-		}},
+		storage0, _ := vm0.StorageAt(addrWETH, w3vm.WETHBalanceSlot(addr0))
+		storage1, _ := vm1.StorageAt(addrWETH, w3vm.WETHBalanceSlot(addr0))
+		if diff := gocmp.Diff(storage0, storage1); diff != "" {
+			t.Errorf("Storage mismatch: (-want +got)\n%s", diff)
+		}
 	})
-	if err != nil {
-		// handle error
-	}
 
-	// 3. Decode output amount
-	var amountOut *big.Int
-	if err := receipt.DecodeReturns(&amountOut); err != nil {
-		// handle error
-	}
+	// Test that modifications to cloned VM don't affect original
+	t.Run("independence", func(t *testing.T) {
+		vm0, _ := w3vm.New(
+			w3vm.WithState(w3types.State{
+				addr0: {Balance: w3.I("10 ether")},
+			}),
+		)
+		vm1 := vm0.Clone()
 
-	fmt.Printf("amount out: %s UNI\n", w3.FromWei(amountOut, 18))
+		// modify cloned VM
+		vm1.SetBalance(addr0, w3.I("20 ether"))
+		vm1.SetNonce(addr0, 10)
+
+		// check original VM is unchanged
+		balance0, _ := vm0.Balance(addr0)
+		if diff := gocmp.Diff(w3.I("10 ether"), balance0, gocmp.AllowUnexported(big.Int{})); diff != "" {
+			t.Errorf("Balance mismatch: (-want +got)\n%s", diff)
+		}
+
+		nonce0, _ := vm0.Nonce(addr0)
+		if nonce0 != 0 {
+			t.Errorf("Nonce mismatch: want %d, got %d", 0, nonce0)
+		}
+
+		// check cloned VM is changed
+		balance1, _ := vm1.Balance(addr0)
+		if diff := gocmp.Diff(w3.I("20 ether"), balance1, gocmp.AllowUnexported(big.Int{})); diff != "" {
+			t.Errorf("Balance mismatch: (-want +got)\n%s", diff)
+		}
+
+		nonce1, _ := vm1.Nonce(addr0)
+		if nonce1 != 10 {
+			t.Errorf("Nonce mismatch: want %d, got %d", 10, nonce1)
+		}
+	})
+
+	// Test that cloning preserves options
+	t.Run("options_preservation", func(t *testing.T) {
+		// create a precompile that echoes input with a prefix
+		precompileAddr := common.Address{0x99}
+		precompile := &mockPrecompile{}
+
+		// create VM with precompile and noBaseFee
+		vm0, _ := w3vm.New(
+			w3vm.WithPrecompile(precompileAddr, precompile),
+			w3vm.WithHeader(&types.Header{
+				BaseFee: big.NewInt(1),
+			}),
+			w3vm.WithNoBaseFee(),
+			w3vm.WithState(w3types.State{
+				addr0: {Balance: w3.I("1 ether")},
+			}),
+		)
+
+		// clone the VM
+		vm1 := vm0.Clone()
+
+		// test that precompile works in cloned VM
+		if receipt, err := vm1.Call(&w3types.Message{
+			From:     addr0,
+			To:       &precompileAddr,
+			Input:    []byte("test"),
+			Gas:      21164,
+			GasPrice: big.NewInt(1),
+		}); err != nil {
+			t.Fatalf("Failed to call precompile: %v", err)
+		} else if wantOutput := []byte("test"); !bytes.Equal(wantOutput, receipt.Output) {
+			t.Errorf("Precompile output mismatch: want %x, got %x", wantOutput, receipt.Output)
+		}
+
+		// test that noBaseFee is preserved by trying a transaction with low gas price
+		// this would fail if base fee was enforced
+		lowGasPriceMsg := &w3types.Message{
+			From:     addr0,
+			To:       &addr1,
+			Value:    w3.I("1 ether"),
+			Gas:      21_000,
+			GasPrice: big.NewInt(0), // very low gas price
+		}
+
+		if _, err := vm1.Apply(lowGasPriceMsg); err != nil {
+			t.Errorf("Transaction with zero gas price failed, noBaseFee not preserved: %v", err)
+		}
+	})
 }
 
-func ExampleVM_Call() {
-	client := w3.MustDial("https://rpc.ankr.com/eth")
-	defer client.Close()
+type mockPrecompile struct{}
 
-	addrWETH := w3.A("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
-	addrEOA := w3.A("0x000000000000000000000000000000000000c0Fe")
+func (m *mockPrecompile) RequiredGas(input []byte) uint64  { return 100 }
+func (m *mockPrecompile) Run(input []byte) ([]byte, error) { return input, nil }
+func (m *mockPrecompile) Name() string                     { return "mockPrecompile" }
 
-	vm, err := w3vm.New(
-		w3vm.WithFork(client, nil),
-		w3vm.WithState(w3types.State{
-			addrWETH: {Storage: map[common.Hash]common.Hash{
-				w3vm.WETHBalanceSlot(addrEOA): common.BigToHash(w3.I("1 ether")),
-			}},
-		}),
-	)
-	if err != nil {
-		// handle error
-	}
-
-	balanceOf := w3.MustNewFunc("balanceOf(address)", "uint256")
-	var balance *big.Int
-	if err := vm.CallFunc(addrWETH, balanceOf, addrEOA).Returns(&balance); err != nil {
-		// handle error
-	}
-	fmt.Printf("%s: Balance: %s WETH\n", addrEOA, w3.FromWei(balance, 18))
-	// Output:
-	// 0x000000000000000000000000000000000000c0Fe: Balance: 1 WETH
-}
+func ptr[T any](t T) *T { return &t }

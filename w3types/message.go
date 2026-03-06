@@ -16,18 +16,19 @@ import (
 // automatically encoded from the given Func and Args arguments by many
 // functions that accept a Message struct as an argument.
 type Message struct {
-	From          common.Address  // Sender
-	To            *common.Address // Recipient
-	Nonce         uint64
-	GasPrice      *big.Int
-	GasFeeCap     *big.Int
-	GasTipCap     *big.Int
-	Gas           uint64
-	Value         *big.Int
-	Input         []byte // Input data
-	AccessList    types.AccessList
-	BlobGasFeeCap *big.Int
-	BlobHashes    []common.Hash
+	From                  common.Address  // Sender
+	To                    *common.Address // Recipient
+	Nonce                 uint64
+	GasPrice              *big.Int
+	GasFeeCap             *big.Int
+	GasTipCap             *big.Int
+	Gas                   uint64
+	Value                 *big.Int
+	Input                 []byte // Input data
+	AccessList            types.AccessList
+	BlobGasFeeCap         *big.Int
+	BlobHashes            []common.Hash
+	SetCodeAuthorizations []types.SetCodeAuthorization
 
 	Func Func  // Func to encode
 	Args []any // Arguments for Func
@@ -47,6 +48,7 @@ func (msg *Message) Set(msg2 *Message) *Message {
 	msg.AccessList = msg2.AccessList
 	msg.BlobGasFeeCap = msg2.BlobGasFeeCap
 	msg.BlobHashes = msg2.BlobHashes
+	msg.SetCodeAuthorizations = msg2.SetCodeAuthorizations
 	msg.Func = msg2.Func
 	msg.Args = msg2.Args
 	return msg
@@ -71,6 +73,7 @@ func (msg *Message) SetTx(tx *types.Transaction, signer types.Signer) (*Message,
 	msg.AccessList = tx.AccessList()
 	msg.BlobGasFeeCap = tx.BlobGasFeeCap()
 	msg.BlobHashes = tx.BlobHashes()
+	msg.SetCodeAuthorizations = tx.SetCodeAuthorizations()
 	return msg, nil
 }
 
@@ -100,18 +103,20 @@ func (msg *Message) SetCallMsg(callMsg ethereum.CallMsg) *Message {
 }
 
 type message struct {
-	From          *common.Address  `json:"from,omitempty"`
-	To            *common.Address  `json:"to,omitempty"`
-	Nonce         hexutil.Uint64   `json:"nonce,omitempty"`
-	GasPrice      *hexutil.Big     `json:"gasPrice,omitempty"`
-	GasFeeCap     *hexutil.Big     `json:"maxFeePerGas,omitempty"`
-	GasTipCap     *hexutil.Big     `json:"maxPriorityFeePerGas,omitempty"`
-	Gas           hexutil.Uint64   `json:"gas,omitempty"`
-	Value         *hexutil.Big     `json:"value,omitempty"`
-	Input         hexutil.Bytes    `json:"data,omitempty"`
-	AccessList    types.AccessList `json:"accessList,omitempty"`
-	BlobGasFeeCap *hexutil.Big     `json:"maxFeePerBlobGas,omitempty"`
-	BlobHashes    []common.Hash    `json:"blobVersionedHashes,omitempty"`
+	From                  *common.Address              `json:"from,omitempty"`
+	To                    *common.Address              `json:"to,omitempty"`
+	Nonce                 hexutil.Uint64               `json:"nonce,omitempty"`
+	GasPrice              *hexutil.Big                 `json:"gasPrice,omitempty"`
+	GasFeeCap             *hexutil.Big                 `json:"maxFeePerGas,omitempty"`
+	GasTipCap             *hexutil.Big                 `json:"maxPriorityFeePerGas,omitempty"`
+	Gas                   hexutil.Uint64               `json:"gas,omitempty"`
+	Value                 *hexutil.Big                 `json:"value,omitempty"`
+	Input                 hexutil.Bytes                `json:"input,omitempty"`
+	Data                  hexutil.Bytes                `json:"data,omitempty"`
+	AccessList            types.AccessList             `json:"accessList,omitempty"`
+	BlobGasFeeCap         *hexutil.Big                 `json:"maxFeePerBlobGas,omitempty"`
+	BlobHashes            []common.Hash                `json:"blobVersionedHashes,omitempty"`
+	SetCodeAuthorizations []types.SetCodeAuthorization `json:"authorizationList,omitempty"`
 }
 
 // MarshalJSON implements the [json.Marshaler].
@@ -138,7 +143,7 @@ func (msg *Message) MarshalJSON() ([]byte, error) {
 		enc.Value = (*hexutil.Big)(msg.Value)
 	}
 	if len(msg.Input) > 0 {
-		enc.Input = msg.Input
+		enc.Data = msg.Input
 	}
 	if len(msg.AccessList) > 0 {
 		enc.AccessList = msg.AccessList
@@ -148,6 +153,9 @@ func (msg *Message) MarshalJSON() ([]byte, error) {
 	}
 	if len(msg.BlobHashes) > 0 {
 		enc.BlobHashes = msg.BlobHashes
+	}
+	if len(msg.SetCodeAuthorizations) > 0 {
+		enc.SetCodeAuthorizations = msg.SetCodeAuthorizations
 	}
 	return json.Marshal(&enc)
 }
@@ -164,14 +172,17 @@ func (msg *Message) UnmarshalJSON(data []byte) error {
 	}
 	msg.To = dec.To
 	msg.Nonce = uint64(dec.Nonce)
-	if dec.GasPrice != nil {
-		msg.GasPrice = (*big.Int)(dec.GasPrice)
-	}
 	if dec.GasFeeCap != nil {
 		msg.GasFeeCap = (*big.Int)(dec.GasFeeCap)
 	}
 	if dec.GasTipCap != nil {
 		msg.GasTipCap = (*big.Int)(dec.GasTipCap)
+	}
+	if dec.GasPrice != nil {
+		msg.GasPrice = (*big.Int)(dec.GasPrice)
+		if msg.GasFeeCap == nil { // TODO: drop this logic here
+			msg.GasFeeCap = msg.GasPrice
+		}
 	}
 	msg.Gas = uint64(dec.Gas)
 	if dec.Value != nil {
@@ -179,6 +190,8 @@ func (msg *Message) UnmarshalJSON(data []byte) error {
 	}
 	if len(dec.Input) > 0 {
 		msg.Input = dec.Input
+	} else if len(dec.Data) > 0 {
+		msg.Input = dec.Data
 	}
 	if len(dec.AccessList) > 0 {
 		msg.AccessList = dec.AccessList
@@ -188,6 +201,9 @@ func (msg *Message) UnmarshalJSON(data []byte) error {
 	}
 	if len(dec.BlobHashes) > 0 {
 		msg.BlobHashes = dec.BlobHashes
+	}
+	if len(dec.SetCodeAuthorizations) > 0 {
+		msg.SetCodeAuthorizations = dec.SetCodeAuthorizations
 	}
 	return nil
 }

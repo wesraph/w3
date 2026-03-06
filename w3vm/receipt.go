@@ -14,14 +14,13 @@ var ErrMissingFunc = errors.New("missing function")
 type Receipt struct {
 	f w3types.Func // Func of corresponding message
 
-	GasUsed         uint64          // Gas used for executing the message
-	GasRefund       uint64          // Gas refunded after executing the message
-	GasLimit        uint64          // Deprecated: Minimum required gas limit (gas used without refund)
-	Logs            []*types.Log    // Logs emitted by the message
-	Output          []byte          // Output bytes of the applied message
-	ContractAddress *common.Address // Contract address created by a contract creation transaction
+	GasUsed         uint64          // Gas used for executing the message (including refunds)
+	MaxGasUsed      uint64          // Maximum gas used during executing the message (excluding refunds)
+	Logs            []*types.Log    // Logs emitted while executing the message
+	Output          []byte          // Output of the executed message
+	ContractAddress *common.Address // Address of the created contract, if any
 
-	Err error // Revert reason
+	Err error // Execution error, if any
 }
 
 // DecodeReturns is like [w3types.Func.DecodeReturns], but returns [ErrMissingFunc]

@@ -44,11 +44,11 @@ func EstimateGas(msg *w3types.Message, blockNumber *big.Int) w3types.RPCCallerFa
 // AccessList requests the access list of the given message at the given
 // blockNumber. If blockNumber is nil, the access list of the message at the
 // latest block is requested.
-func AccessList(msg *w3types.Message, blockNumber *big.Int) w3types.RPCCallerFactory[AccessListResponse] {
+func AccessList(msg *w3types.Message, blockNumber *big.Int) w3types.RPCCallerFactory[*AccessListResponse] {
 	return module.NewFactory(
 		"eth_createAccessList",
 		[]any{msg, module.BlockNumberArg(blockNumber)},
-		module.WithArgsWrapper[AccessListResponse](msgArgsWrapper),
+		module.WithArgsWrapper[*AccessListResponse](msgArgsWrapper),
 	)
 }
 
@@ -112,6 +112,11 @@ type CallFuncFactory struct {
 
 func (f *CallFuncFactory) Returns(returns ...any) w3types.RPCCaller {
 	f.returns = returns
+	return f
+}
+
+func (f *CallFuncFactory) From(from common.Address) *CallFuncFactory {
+	f.msg.From = from
 	return f
 }
 

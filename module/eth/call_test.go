@@ -15,7 +15,7 @@ import (
 var funcBalanceOf = w3.MustNewFunc("balanceOf(address)", "uint256")
 
 func TestCall(t *testing.T) {
-	tests := []rpctest.TestCase[[]byte]{
+	rpctest.RunTestCases(t, []rpctest.TestCase[[]byte]{
 		{
 			Golden: "call_func",
 			Call: eth.Call(&w3types.Message{
@@ -23,7 +23,7 @@ func TestCall(t *testing.T) {
 				Func: funcBalanceOf,
 				Args: []any{w3.A("0x000000000000000000000000000000000000c0Fe")},
 			}, nil, nil),
-			WantRet: ptr(make([]byte, 32)),
+			WantRet: make([]byte, 32),
 		},
 		{
 			Golden: "call_func__overrides",
@@ -33,16 +33,14 @@ func TestCall(t *testing.T) {
 				Args: []any{w3.A("0x000000000000000000000000000000000000c0Fe")},
 			}, nil, w3types.State{
 				w3.A("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"): &w3types.Account{
-					Storage: map[common.Hash]common.Hash{
+					Storage: w3types.Storage{
 						w3.H("0xf68b260b81af177c0bf1a03b5d62b15aea1b486f8df26c77f33aed7538cfeb2c"): w3.H("0x000000000000000000000000000000000000000000000000000000000000002a"),
 					},
 				},
 			}),
-			WantRet: ptr(common.BigToHash(big.NewInt(42)).Bytes()),
+			WantRet: common.BigToHash(big.NewInt(42)).Bytes(),
 		},
-	}
-
-	rpctest.RunTestCases(t, tests)
+	})
 }
 
 func TestCallFunc(t *testing.T) {
@@ -67,7 +65,7 @@ func TestCallFunc(t *testing.T) {
 }
 
 func TestEstimateGas(t *testing.T) {
-	tests := []rpctest.TestCase[uint64]{
+	rpctest.RunTestCases(t, []rpctest.TestCase[uint64]{
 		{
 			Golden: "estimate_gas",
 			Call: eth.EstimateGas(&w3types.Message{
@@ -75,15 +73,13 @@ func TestEstimateGas(t *testing.T) {
 				Func: funcBalanceOf,
 				Args: []any{w3.A("0x000000000000000000000000000000000000c0Fe")},
 			}, nil),
-			WantRet: ptr[uint64](23750),
+			WantRet: 23750,
 		},
-	}
-
-	rpctest.RunTestCases(t, tests)
+	})
 }
 
 func TestAccessList(t *testing.T) {
-	tests := []rpctest.TestCase[eth.AccessListResponse]{
+	rpctest.RunTestCases(t, []rpctest.TestCase[*eth.AccessListResponse]{
 		{
 			Golden: "create_access_list",
 			Call: eth.AccessList(&w3types.Message{
@@ -103,7 +99,5 @@ func TestAccessList(t *testing.T) {
 				GasUsed: 26050,
 			},
 		},
-	}
-
-	rpctest.RunTestCases(t, tests)
+	})
 }
